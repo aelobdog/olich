@@ -9,13 +9,14 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <string.h>
+#include <time.h>
+#include <stdarg.h>
+
 #include "config.h"
 
 /* defines */
 
 #define _DEFAULT_SOURCE
-#define _BSD_SOURCE
-#define _GNU_SOURCE
 
 #define OLICH_VERSION "0.0.1"
 #define CTRL(k) ((k) & 0x1f)
@@ -67,6 +68,8 @@ struct editor_config {
    struct termios init_termios;
    ed_row_data *rows_data;
    char *filename;
+   char status_extra[80];
+   time_t statis_extra_time;
    int numrows;
    int rows;
    int cols;
@@ -185,25 +188,52 @@ void draw_rows(struct buffer *buf) {
 
 void draw_statusbar(struct buffer *buf) {
    int len;
-   char status_info[80];
+   int rlen;
+   char l_status_info[80];
+   char r_status_info[80];
 
    buffer_append(buf, "\x1b[7m", 4);
 
    len = snprintf(
-         status_info, 
-         sizeof(status_info),
+         l_status_info, 
+         sizeof(l_status_info),
          "  %.20s  | %d lines |",
          E.filename ? E.filename : "[No Name]",
          E.numrows
    );
+
+   rlen = snprintf(
+         r_status_info, 
+         sizeof(r_status_info), 
+         "[ %d / %d ]",
+         E.cy + 1,
+         E.numrows
+   ); 
+
    if (len > E.cols) len = E.cols;
-   buffer_append(buf, status_info, len);
+   buffer_append(buf, l_status_info, len);
 
    while (len < E.cols) {
-      buffer_append(buf, " ", 1);
-      len++;
+      if (E.cols - len == rlen) {
+         buffer_append(buf, r_status_info, rlen);
+         break;
+      } else {
+         buffer_append(buf, " ", 1);
+         len++;
+      }
    }
    buffer_append(buf, "\x1b[m", 3);
+   buffer_append(buf, "\r\n", 2);
+}
+
+void draw_extra_bar(struct buffer *buf) {
+   int msglen;
+   buffer_append(buf, "\x1b[K", 3);
+   msglen = strlen(E.status_extra);
+   if (msglen > E.cols) msglen = E.cols;
+   if (msglen && time(NULL) - E.statis_extra_time < 5) {
+      buffer_append(buf, E.status_extra, msglen);
+   }
 }
 
 void refresh_screen() {
@@ -216,6 +246,7 @@ void refresh_screen() {
    buffer_append(&buf, "\x1b[H", 3);
    draw_rows(&buf);   
    draw_statusbar(&buf);
+   draw_extra_bar(&buf);
 
    snprintf(cposbuf, sizeof(cposbuf), "\x1b[%d;%dH", E.cy - E.rowoff + 1 , E.rx - E.coloff + 1);
    buffer_append(&buf, cposbuf, strlen(cposbuf));
@@ -223,6 +254,19 @@ void refresh_screen() {
    buffer_append(&buf, "\x1b[?25h", 6);
    write(STDOUT_FILENO, buf.data, buf.len);
    buffer_free(&buf);
+}
+
+void set_status_extra(const char *fmt, ...) {
+   va_list params;
+   va_start(params, fmt);
+   vsnprintf(
+      E.status_extra, 
+      sizeof(E.status_extra),
+      fmt, 
+      params 
+   );
+   va_end(params);
+   E.statis_extra_time = time(NULL);
 }
 
 /* terminal functions */
@@ -401,8 +445,10 @@ void init() {
    E.numrows = 0;
    E.rows_data = NULL;
    E.filename = NULL;
+   E.statis_extra_time = 0;
+   E.status_extra[0] = '\0';
    if (term_size(&E.rows, &E.cols) == -1) die("term_size");
-   E.rows--;
+   E.rows -= 2;
 }
 
 /* execution entry point */
@@ -414,6 +460,8 @@ int main(int argc, char *argv[]) {
    if (argc >= 2) {
       open_editor(argv[1]);
    }
+
+   set_status_extra("Read 'config.h' for keybindings");
 
    while (1) {
       refresh_screen();
