@@ -10,6 +10,8 @@
 #include <sys/types.h>
 #include <string.h>
 
+#include "config.h"
+
 /* defines */
 
 #define _DEFAULT_SOURCE
@@ -56,6 +58,8 @@ void buffer_free(struct buffer *buf) {
 
 typedef struct ed_row_data {
    int size;
+   int rensize;
+   char *render;
    char *data;
 } ed_row_data;
 
@@ -109,10 +113,10 @@ void draw_rows(struct buffer *buf) {
          }
       } else {
          int len;
-         len = E.rows_data[filerow].size - E.coloff;
+         len = E.rows_data[filerow].rensize - E.coloff;
          if (len < 0) len = 0;
          if (len > E.cols)  len = E.cols;
-         buffer_append(buf, &E.rows_data[filerow].data[E.coloff], len);
+         buffer_append(buf, &E.rows_data[filerow].render[E.coloff], len);
       }
 
          buffer_append(buf, "\x1b[K", 3);
@@ -190,8 +194,8 @@ int read_key() {
       }
       return '\x1b';
    } 
-   else if (c == CTRL('a')) return HOME;
-   else if (c == CTRL('e')) return END;
+   else if (c == HOME_KEY) return HOME;
+   else if (c == END_KEY) return END;
    else {
       return c;
    }
@@ -232,6 +236,31 @@ int term_size(int *rows, int *cols) {
 
 /* row operations */
 
+void editor_update_row(ed_row_data *row) {
+   int j;
+   int idx;
+   int tabs;
+
+   tabs = 0;
+   for (j = 0; j < row->size; j++) {
+      if (row->data[j] == '\t') tabs++;
+   }
+   
+   free(row->render);
+   row->render = malloc(row->size + tabs*2 + 1);
+
+   idx = 0;
+   for (j = 0; j < row->size; j++) {
+      if (row->data[j] == '\t') {
+         row->render[idx++] = ' ';
+         while (idx % 3 != 0) row->render[idx++] = ' ';
+      } 
+      else row->render[idx++] = row->data[j];
+   }
+   row->render[idx] = '\0';
+   row->rensize = idx;
+}
+
 void editor_append_row(char *str, size_t len) {
    int current;
 
@@ -241,6 +270,11 @@ void editor_append_row(char *str, size_t len) {
    E.rows_data[current].data = malloc(len + 1);
    memcpy(E.rows_data[current].data, str, len);
    E.rows_data[current].data[len] = '\0';
+
+   E.rows_data[current].rensize = 0;
+   E.rows_data[current].render = NULL;
+   editor_update_row(&E.rows_data[current]);
+   
    E.numrows++;
 }
 
@@ -303,7 +337,7 @@ void cursor_move(int key) {
 void key_proc() {
    int c = read_key();
    switch (c) {
-      case (int)(CTRL('q')):
+      case QUIT_KEY:
          write(STDOUT_FILENO, "\x1b[2J", 3);
          write(STDOUT_FILENO, "\x1b[H", 3);
          exit(0);
