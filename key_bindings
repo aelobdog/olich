@@ -1,7 +1,14 @@
 OLICH VERSION 0.0.1
 -------------------
 
-ctrl+q      :  quit
-ctrl+a      :  home
-ctrl+e      :  end
+SETTABLE KEYBINDINGS
+--------------------
+ctrl+q   :      quit
+ctrl+a   :      home
+ctrl+e   :       end
+
+RESERVED KEYBINDINGS
+--------------------
+ctrl+h   : backspace
+ctrl-l   :    escape
 

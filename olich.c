@@ -11,6 +11,7 @@
 #include <string.h>
 #include <time.h>
 #include <stdarg.h>
+#include <fcntl.h>
 
 #include "config.h"
 
@@ -28,12 +29,14 @@ char    *strdup(const char *string);
 /* handling special keys */
 
 enum special_keys {
+   BACKSPACE = 127,
    ARROWL = 1000,
    ARROWR,
    ARROWU,
    ARROWD,
    END,
-   HOME
+   HOME,
+   DELETE
 };
 
 /* custom strings */
@@ -133,6 +136,23 @@ void editor_append_row(char *str, size_t len) {
    
    E.numrows++;
 }
+
+void editor_put_char_in_row(ed_row_data *row, int pos, int c) {
+   if (pos < 0 || pos > row->size) pos = row->size;
+   row->data = realloc(row->data, row->size + 2);
+   memmove(&row->data[pos+1], &row->data[pos], row->size - pos + 1);
+   row->size++;
+   row->data[pos] = c;
+   editor_update_row(row);
+}
+
+/* editor operations */
+
+void insert_char(int c) {
+   if (E.cy == E.numrows) editor_append_row("", 0);
+   editor_put_char_in_row(&E.rows_data[E.cy], E.cx, c);
+   E.cx++;
+} 
 
 /* output */
 
@@ -388,6 +408,60 @@ void open_editor(char *filename) {
    fclose(file_handle);
 }
 
+char *editor_to_string(int *len) {
+   int totlen; 
+   int j;
+   char *content;
+   char *pointer;
+
+   content = pointer = NULL;
+
+   totlen = 0;
+   for (j = 0; j < E.numrows; j++) totlen += E.rows_data->size + 1;
+   *len = totlen;
+
+   content = (char *)malloc(totlen);
+   pointer = content;
+
+   for (j = 0; j < E.numrows; j++) {
+      memcpy(pointer, E.rows_data[j].data, E.rows_data[j].size);
+      pointer += E.rows_data[j].size;
+      *pointer = '\n';
+      pointer++;
+   }
+
+   return content; 
+}
+
+void save_editor() {
+   int len;
+   char *content;
+   int fd;
+
+   content = NULL;
+   if (E.filename == NULL) return;
+   
+   content = editor_to_string(&len);
+
+   fd = open(E.filename, O_RDWR | O_CREAT, 0644);
+   if (fd != -1) {
+      if (ftruncate(fd, len)) {
+         if (write(fd, content, len) == -1) {
+            close(fd);
+            free(content);
+            set_status_extra("%d bytes written.", len);
+            return;
+         }
+      }
+      close(fd);
+   } else {
+      set_status_extra("ugh");
+      sleep(5);
+   }
+   free(content);
+   set_status_extra("cannot save ! %s", strerror(errno));
+}
+
 /* input */
 
 void cursor_move(int key) {
@@ -423,14 +497,32 @@ void cursor_move(int key) {
 void key_proc() {
    int c = read_key();
    switch (c) {
+      case '\r':
+         break;
+      
       case QUIT_KEY:
          write(STDOUT_FILENO, "\x1b[2J", 3);
          write(STDOUT_FILENO, "\x1b[H", 3);
          exit(0);
          break;
+      
       case ARROWL: case ARROWU: case ARROWR: case ARROWD: case HOME: case END:
          cursor_move(c);
          break;
+      
+      case BACKSPACE: case DELETE: case CTRL('h'):
+         break;
+
+      case '\x1b': case CTRL('l'):
+         break;
+
+      case SAVE_KEY:
+         set_status_extra("saving");
+         save_editor();
+         break;
+
+      default:
+         insert_char(c);
    }
 }
 
@@ -467,5 +559,6 @@ int main(int argc, char *argv[]) {
       refresh_screen();
       key_proc();
    }
+   disable_raw();
    return 0;
 }
