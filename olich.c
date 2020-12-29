@@ -9,7 +9,6 @@
 #include <sys/ioctl.h>
 #include <sys/types.h>
 #include <string.h>
-
 #include "config.h"
 
 /* defines */
@@ -17,6 +16,7 @@
 #define _DEFAULT_SOURCE
 #define _BSD_SOURCE
 #define _GNU_SOURCE
+
 
 #define OLICH_VERSION "0.0.1"
 #define CTRL(k) ((k) & 0x1f)
@@ -71,17 +71,75 @@ struct editor_config {
    int cols;
    int cx;
    int cy;
+   int rx;
    int rowoff;
    int coloff;
 } E;
 
+/* row operations */
+
+int cx_to_rx(ed_row_data *row, int cx) {
+   int rx = 0;
+   int j;
+   for (j = 0; j < cx; j++) {
+      if (row->data[j] == '\t') rx += (TAB_STOP - 1) - (rx % TAB_STOP);
+      rx++;
+   }
+   return rx;
+}
+
+void editor_update_row(ed_row_data *row) {
+   int j;
+   int idx;
+   int tabs;
+
+   tabs = 0;
+   for (j = 0; j < row->size; j++) {
+      if (row->data[j] == '\t') tabs++;
+   }
+   
+   free(row->render);
+   row->render = malloc(row->size + tabs*(TAB_STOP - 1) + 1);
+
+   idx = 0;
+   for (j = 0; j < row->size; j++) {
+      if (row->data[j] == '\t') {
+         row->render[idx++] = ' ';
+         while (idx % TAB_STOP != 0) row->render[idx++] = ' ';
+      } 
+      else row->render[idx++] = row->data[j];
+   }
+   row->render[idx] = '\0';
+   row->rensize = idx;
+}
+
+void editor_append_row(char *str, size_t len) {
+   int current;
+
+   E.rows_data = realloc(E.rows_data, sizeof(ed_row_data) * (E.numrows + 1));
+   current = E.numrows;
+   E.rows_data[current].size = len;
+   E.rows_data[current].data = malloc(len + 1);
+   memcpy(E.rows_data[current].data, str, len);
+   E.rows_data[current].data[len] = '\0';
+
+   E.rows_data[current].rensize = 0;
+   E.rows_data[current].render = NULL;
+   editor_update_row(&E.rows_data[current]);
+   
+   E.numrows++;
+}
+
 /* output */
 
 void scroll_editor() {
+   E.rx = 0;
+   if (E.cy < E.numrows) E.rx = cx_to_rx(&E.rows_data[E.cy], E.cx);
+
    if (E.cy < E.rowoff) E.rowoff = E.cy;
    if (E.cy >= E.rowoff + E.rows) E.rowoff = E.cy - E.rows + 1;
-   if (E.cx < E.coloff) E.coloff = E.cx;
-   if (E.cx >= E.coloff + E.cols) E.coloff = E.cx - E.cols + 1;
+   if (E.rx < E.coloff) E.coloff = E.rx;
+   if (E.rx >= E.coloff + E.cols) E.coloff = E.rx - E.cols + 1;
 }
 
 void draw_rows(struct buffer *buf) {
@@ -120,8 +178,19 @@ void draw_rows(struct buffer *buf) {
       }
 
          buffer_append(buf, "\x1b[K", 3);
-         if (y < E.rows - 1) buffer_append(buf, "\r\n", 2);
+         buffer_append(buf, "\r\n", 2);
    }
+}
+
+void draw_statusbar(struct buffer *buf) {
+   int len;
+   buffer_append(buf, "\x1b[7m", 4);
+   len = 0;
+   while (len < E.cols) {
+      buffer_append(buf, " ", 1);
+      len++;
+   }
+   buffer_append(buf, "\x1b[m", 3);
 }
 
 void refresh_screen() {
@@ -133,8 +202,9 @@ void refresh_screen() {
    buffer_append(&buf, "\x1b[?25l", 6);
    buffer_append(&buf, "\x1b[H", 3);
    draw_rows(&buf);   
+   draw_statusbar(&buf);
 
-   snprintf(cposbuf, sizeof(cposbuf), "\x1b[%d;%dH", E.cy - E.rowoff + 1 , E.cx - E.coloff + 1);
+   snprintf(cposbuf, sizeof(cposbuf), "\x1b[%d;%dH", E.cy - E.rowoff + 1 , E.rx - E.coloff + 1);
    buffer_append(&buf, cposbuf, strlen(cposbuf));
 
    buffer_append(&buf, "\x1b[?25h", 6);
@@ -234,50 +304,6 @@ int term_size(int *rows, int *cols) {
    }
 }
 
-/* row operations */
-
-void editor_update_row(ed_row_data *row) {
-   int j;
-   int idx;
-   int tabs;
-
-   tabs = 0;
-   for (j = 0; j < row->size; j++) {
-      if (row->data[j] == '\t') tabs++;
-   }
-   
-   free(row->render);
-   row->render = malloc(row->size + tabs*2 + 1);
-
-   idx = 0;
-   for (j = 0; j < row->size; j++) {
-      if (row->data[j] == '\t') {
-         row->render[idx++] = ' ';
-         while (idx % 3 != 0) row->render[idx++] = ' ';
-      } 
-      else row->render[idx++] = row->data[j];
-   }
-   row->render[idx] = '\0';
-   row->rensize = idx;
-}
-
-void editor_append_row(char *str, size_t len) {
-   int current;
-
-   E.rows_data = realloc(E.rows_data, sizeof(ed_row_data) * (E.numrows + 1));
-   current = E.numrows;
-   E.rows_data[current].size = len;
-   E.rows_data[current].data = malloc(len + 1);
-   memcpy(E.rows_data[current].data, str, len);
-   E.rows_data[current].data[len] = '\0';
-
-   E.rows_data[current].rensize = 0;
-   E.rows_data[current].render = NULL;
-   editor_update_row(&E.rows_data[current]);
-   
-   E.numrows++;
-}
-
 /* file io */
 
 void open_editor(char *filename) {
@@ -353,11 +379,13 @@ void key_proc() {
 void init() {
    E.cx = 0;
    E.cy = 0;
+   E.rx = 0;
    E.rowoff = 0;
    E.coloff = 0;
    E.numrows = 0;
    E.rows_data = NULL;
    if (term_size(&E.rows, &E.cols) == -1) die("term_size");
+   E.rows--;
 }
 
 /* execution entry point */
