@@ -17,12 +17,12 @@
 #define _BSD_SOURCE
 #define _GNU_SOURCE
 
-
 #define OLICH_VERSION "0.0.1"
 #define CTRL(k) ((k) & 0x1f)
 #define BUFFER_INIT {NULL, 0}
 
 ssize_t getline(char** one, size_t* two, FILE* three);
+char    *strdup(const char *string);
 
 /* handling special keys */
 
@@ -66,6 +66,7 @@ typedef struct ed_row_data {
 struct editor_config {
    struct termios init_termios;
    ed_row_data *rows_data;
+   char *filename;
    int numrows;
    int rows;
    int cols;
@@ -184,8 +185,20 @@ void draw_rows(struct buffer *buf) {
 
 void draw_statusbar(struct buffer *buf) {
    int len;
+   char status_info[80];
+
    buffer_append(buf, "\x1b[7m", 4);
-   len = 0;
+
+   len = snprintf(
+         status_info, 
+         sizeof(status_info),
+         "  %.20s  | %d lines |",
+         E.filename ? E.filename : "[No Name]",
+         E.numrows
+   );
+   if (len > E.cols) len = E.cols;
+   buffer_append(buf, status_info, len);
+
    while (len < E.cols) {
       buffer_append(buf, " ", 1);
       len++;
@@ -316,6 +329,9 @@ void open_editor(char *filename) {
    line = NULL;
    linecap = 0;
 
+   free(E.filename);
+   E.filename = strdup(filename);
+
    while ((linelen = getline(&line, &linecap, file_handle)) != -1) {
       while (linelen > 0 && 
             (line[linelen-1] == '\n' || 
@@ -384,6 +400,7 @@ void init() {
    E.coloff = 0;
    E.numrows = 0;
    E.rows_data = NULL;
+   E.filename = NULL;
    if (term_size(&E.rows, &E.cols) == -1) die("term_size");
    E.rows--;
 }
