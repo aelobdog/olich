@@ -23,9 +23,6 @@
 #define CTRL(k) ((k) & 0x1f)
 #define BUFFER_INIT {NULL, 0}
 
-ssize_t getline(char** one, size_t* two, FILE* three);
-char    *strdup(const char *string);
-
 /* handling special keys */
 
 enum special_keys {
@@ -64,6 +61,7 @@ void buffer_free(struct buffer *buf) {
 typedef struct ed_row_data {
    int size;
    int rensize;
+   unsigned char *highlighted;
    char *render;
    char *data;
 } ed_row_data;
@@ -85,16 +83,34 @@ struct editor_config {
    int mod;
 } E;
 
+ssize_t getline(char** one, size_t* two, FILE* three);
+char    *strdup(const char *string);
+char* editor_prompt(char *prompt, void (*callback)(char*, int));
+void editor_update_hl(ed_row_data *row);
+
 /* row operations */
 
 int cx_to_rx(ed_row_data *row, int cx) {
-   int rx = 0;
+   int rx;
    int j;
+   rx = 0;
    for (j = 0; j < cx; j++) {
       if (row->data[j] == '\t') rx += (TAB_STOP - 1) - (rx % TAB_STOP);
       rx++;
    }
    return rx;
+}
+
+int rx_to_cx(ed_row_data *row, int rx) {
+   int cx;
+   int rx_now;
+   rx_now = 0; 
+   for (cx = 0; cx < row->size; cx++) {
+      if (row->data[cx] == '\t') rx_now += (TAB_STOP - 1) - (rx_now % TAB_STOP);
+      rx_now++;
+      if (rx_now > rx) return cx;
+   }
+   return cx;
 }
 
 void editor_update_row(ed_row_data *row) {
@@ -120,6 +136,7 @@ void editor_update_row(ed_row_data *row) {
    }
    row->render[idx] = '\0';
    row->rensize = idx;
+   editor_update_hl(row);
 }
 
 void editor_insert_row(int current, char *str, size_t len) {
@@ -135,6 +152,7 @@ void editor_insert_row(int current, char *str, size_t len) {
 
    E.rows_data[current].rensize = 0;
    E.rows_data[current].render = NULL;
+   E.rows_data[current].highlighted = NULL;
    editor_update_row(&E.rows_data[current]);
    
    E.numrows++;
@@ -142,6 +160,7 @@ void editor_insert_row(int current, char *str, size_t len) {
 }
 
 void editor_free_row(ed_row_data *row) {
+   free(row->highlighted);
    free(row->render);
    free(row->data);
 }
@@ -241,6 +260,7 @@ void scroll_editor() {
 void draw_rows(struct buffer *buf) {
    int y;
    int padding;
+ 
    for (y = 0; y < E.rows; y++) {
       int filerow;
       filerow = y + E.rowoff;
@@ -267,14 +287,43 @@ void draw_rows(struct buffer *buf) {
          }
       } else {
          int len;
+         int j;
+         char* c;
+         unsigned char* hl;
+         int curcolor;
+         
          len = E.rows_data[filerow].rensize - E.coloff;
          if (len < 0) len = 0;
          if (len > E.cols)  len = E.cols;
-         buffer_append(buf, &E.rows_data[filerow].render[E.coloff], len);
-      }
+         curcolor = -1;
+         c = &E.rows_data[filerow].render[E.coloff];
+         hl = &E.rows_data[filerow].highlighted[E.coloff];
 
-         buffer_append(buf, "\x1b[K", 3);
-         buffer_append(buf, "\r\n", 2);
+         for (j = 0; j < len; j++) {
+            if (hl[j] == HL_NORMAL) {
+               if (curcolor != -1) { 
+                  buffer_append(buf, "\x1b[39m", 5);
+                  curcolor = -1;
+               }
+               buffer_append(buf, &c[j], 1);  
+            } else {
+               int color;
+               char cbuf[16];
+               int clen;
+               
+               color = hl_colors(hl[j]);
+               if (color != curcolor) {
+                  curcolor = color;
+                  clen = snprintf(cbuf, sizeof(cbuf), "\x1b[%dm", color);
+                  buffer_append(buf, cbuf, clen);
+               }
+               buffer_append(buf, &c[j], 1);
+            }
+         }
+         buffer_append(buf, "\x1b[39m", 5);
+      }
+      buffer_append(buf, "\x1b[K", 3);
+      buffer_append(buf, "\r\n", 2);
    }
 }
 
@@ -455,6 +504,38 @@ int term_size(int *rows, int *cols) {
    }
 }
 
+/* syntax highlighting */
+
+int is_separator(int c) {
+   return isspace(c) || c == '\0' || strchr(",.()+-/*=~%<>[];", c) != NULL;
+}
+
+void editor_update_hl(ed_row_data *row) {
+   int i;
+   char c;
+   int prev_sep;
+   unsigned char prev_hl;
+
+   row->highlighted = realloc(row->highlighted, row->rensize);
+   memset(row->highlighted, HL_NORMAL, row->rensize); 
+   prev_sep = 1;
+
+   i = 0;
+   while (i < row->rensize) {
+      c = row->render[i];
+      prev_hl = (i > 0) ? row->highlighted[i-1] : HL_NORMAL;
+      
+      if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) || (c == '.' && prev_hl == HL_NUMBER)) {
+         row->highlighted[i] = HL_NUMBER;
+         i++;
+         prev_sep = 0;
+         continue;
+      }
+      prev_sep = is_separator(c);
+      i++;
+   }
+}
+
 /* file io */
 
 void open_editor(char *filename) {
@@ -515,7 +596,13 @@ void save_editor() {
    char *content;
    int fd;
 
-   if (E.filename == NULL) return;
+   if (E.filename == NULL) {
+      E.filename = editor_prompt("Save as : %s [ESC to cancel]", NULL);
+      if (E.filename == NULL) {
+         set_status_extra("Did not save file");
+         return;
+      }
+   } 
   
    content = editor_to_string(&len);
    fd = open(E.filename, O_RDWR | O_CREAT, 0644);
@@ -534,6 +621,73 @@ void save_editor() {
    }
    free(content);
    set_status_extra("cannot save ! %s", strerror(errno));
+}
+
+/* incremental search */
+
+void callback_find(char* search_for, int key) {
+   static int last = -1;
+   static int direction = 1;
+
+   int i;
+   int current;
+   ed_row_data *row;
+   char* match;
+
+   if (key == '\r' || key == '\x1b') {
+      last = -1;
+      direction = 1;
+      return;
+   } else if (key == ARROWR || key == ARROWD) {
+      direction = 1;
+   } else if (key == ARROWL || key == ARROWU) {
+      direction = -1;
+   } else {
+      last = -1;
+      direction = 1;
+   }
+
+   if (last == -1) direction = 1;
+   current = last; 
+
+   for (i = 0; i < E.numrows; i++) {
+      current += direction;
+      if (current == -1) current = E.numrows - 1;
+      else if (current == E.numrows) current = 0;
+
+      row = &E.rows_data[current];
+      match = strstr(row->render, search_for);
+      if (match) {
+         last = current;
+         E.cy = current;
+         E.cx = rx_to_cx(row, match - row->render);
+         E.rowoff = E.numrows;
+         break;
+      }
+   }
+}
+
+void find_editor() {
+   int old_cx; 
+   int old_cy;
+   int old_coloff; 
+   int old_rowoff;
+   char* search_for; 
+
+   old_cx = E.cx;
+   old_cy = E.cy;
+   old_coloff = E.coloff;
+   old_rowoff = E.rowoff;
+
+   search_for = editor_prompt("Search : %s [ESC to cancel]", callback_find);
+   
+   if (search_for) free(search_for);
+   else {
+      E.cx = old_cx;
+      E.cy = old_cy;
+      E.coloff = old_coloff;
+      E.rowoff = old_rowoff;
+   }
 }
 
 /* input */
@@ -579,6 +733,7 @@ void key_proc() {
    static int quit_times = QUIT_CONF_CONTROL;
    int c = read_key();
    switch (c) {
+
       case '\r':
          insert_newline();
          break;
@@ -614,20 +769,24 @@ void key_proc() {
          save_editor();
          break;
 
+      case FIND_KEY:
+         find_editor();
+         break;
+
       default:
          insert_char(c);
    }
    quit_times = QUIT_CONF_CONTROL;
 }
 
-char* editorPrompt(char *prompt) {
+char* editor_prompt(char *prompt, void (*callback)(char*, int)) {
    size_t input_buf_size; 
    size_t input_buf_len; 
    char *input_buf;
    int c;
 
    input_buf_size = 128;
-   input_buf = malloc(input_buf_len);
+   input_buf = malloc(input_buf_size);
    input_buf_len = 0;
    input_buf[0] = '\0';
 
@@ -636,9 +795,17 @@ char* editorPrompt(char *prompt) {
       refresh_screen();
 
       c = read_key();
-      if (c == '\r') {
+      if (c == DELETE || c == BACKSPACE || c == CTRL('h')) {
+         if (input_buf_len != 0) input_buf[--input_buf_len] = '\0';
+      } else if (c == '\x1b') {
+         set_status_extra("");
+         if (callback) callback(input_buf, c);
+         free(input_buf);
+         return NULL;
+      } else if (c == '\r') {
          if (input_buf_len != 0) {
             set_status_extra("");
+            if (callback) callback(input_buf, c);
             return input_buf;
          }
       }
@@ -650,6 +817,7 @@ char* editorPrompt(char *prompt) {
          input_buf[input_buf_len++] = c;
          input_buf[input_buf_len] = '\0';
       }
+      if (callback) callback(input_buf, c);
    }
 }
 

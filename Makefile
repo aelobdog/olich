@@ -1,5 +1,5 @@
-olich: olich.c
-	$(CC) olich.c -o olich -Wall -Wextra -pedantic --std=c89 
+olich: src/olich.c
+	$(CC) src/olich.c -o bin/olich -Wall -Wextra -pedantic --std=c89 
 
 clean:
-	rm olich
+	rm bin/olich

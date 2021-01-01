@@ -1,0 +1,19 @@
+   ____________________________
+  |                            |  
+  |    OLICH VERSION  0.0.1    |  
+  |----------------------------|  
+  |                            |  
+  |    SETTABLE KEYBINDINGS    |  
+  |    --------------------    |
+  |                            |  
+  |    ctrl+q   :      quit    |  
+  |    ctrl+a   :      home    |  
+  |    ctrl+e   :       end    |  
+  |    ctrl+f   :      find    |
+  |                            |  
+  |    RESERVED KEYBINDINGS    |  
+  |    --------------------    |
+  |                            |
+  |    ctrl+h   : backspace    |  
+  |    ctrl-l   :    escape    |  
+  |                            |  
