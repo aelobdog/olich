@@ -14,6 +14,7 @@
 #include <fcntl.h>
 
 #include "config.h"
+#include "synhl.h"
 
 /* defines */
 
@@ -69,6 +70,7 @@ typedef struct ed_row_data {
 struct editor_config {
    struct termios init_termios;
    ed_row_data *rows_data;
+   struct editor_syntax *syntax;
    char *filename;
    char status_extra[80];
    time_t statis_extra_time;
@@ -347,7 +349,8 @@ void draw_statusbar(struct buffer *buf) {
    rlen = snprintf(
          r_status_info, 
          sizeof(r_status_info), 
-         "[ %d / %d ]",
+         " [ %s ] [ %d / %d ]",
+         E.syntax ? E.syntax->filetype : "text",
          E.cy + 1,
          E.numrows
    ); 
@@ -466,6 +469,8 @@ int read_key() {
    } 
    else if (c == HOME_KEY) return HOME;
    else if (c == END_KEY) return END;
+   else if (c == NEXTLINE) return ARROWD;
+   else if (c == PREVLINE) return ARROWU;
    else {
       return c;
    }
@@ -514,25 +519,95 @@ void editor_update_hl(ed_row_data *row) {
    int i;
    char c;
    int prev_sep;
+   int in_string;
+   char *scs;
+   int scs_len;
    unsigned char prev_hl;
 
    row->highlighted = realloc(row->highlighted, row->rensize);
    memset(row->highlighted, HL_NORMAL, row->rensize); 
-   prev_sep = 1;
 
+   if (E.syntax == NULL) return;
+   scs = E.syntax->sl_cmt_start;
+   scs_len = scs ? strlen(scs) : 0;
+
+   prev_sep = 1;
    i = 0;
+   in_string = 0;
    while (i < row->rensize) {
       c = row->render[i];
       prev_hl = (i > 0) ? row->highlighted[i-1] : HL_NORMAL;
-      
-      if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) || (c == '.' && prev_hl == HL_NUMBER)) {
-         row->highlighted[i] = HL_NUMBER;
-         i++;
-         prev_sep = 0;
-         continue;
+
+      if (scs_len && !in_string) {
+         if (!strncmp(&row->render[i], scs, scs_len)) {
+            memset(&row->highlighted[i], HL_COMMENT, row->rensize - i);
+            break;
+         }
       }
+      
+      if (E.syntax->flags & HL_STRING) {
+         if (in_string) {
+            row->highlighted[i] = HL_STRING;
+            if (c == '\\' && i+1 < row->rensize) {
+               row->highlighted[i+1] = HL_STRING;
+               i += 2;
+               continue;
+            }
+            if (c == in_string) in_string = 0;
+            i++;
+            prev_sep = 1;
+            continue;
+         } else {
+            if (c == '"' || c == '\'') {
+               in_string = c;
+               row->highlighted[i] = HL_STRING;
+               i++;
+               continue;
+            }
+         }
+      }
+
+      if (E.syntax->flags & HL_NUMBERS) {
+         if ((isdigit(c) && (prev_sep || prev_hl == HL_NUMBER)) || (c == '.' && prev_hl == HL_NUMBER)) {
+            row->highlighted[i] = HL_NUMBER;
+            i++;
+            prev_sep = 0;
+            continue;
+         }
+      }
+
       prev_sep = is_separator(c);
       i++;
+   }
+}
+
+void select_highlighting() {
+   unsigned int i;
+   unsigned int j;
+   int is_ext;
+   int loopvar;
+   char *ext;
+
+   E.syntax = NULL;
+   if (E.filename == NULL) return;
+
+   ext = strrchr(E.filename, '.');
+   
+   for (i = 0; i < HL_DB_ENTRIES; i++) {
+      struct editor_syntax *edsyn = &HL_DB[i];
+      j = 0;
+      while (edsyn->filematch[j]) {
+         is_ext = (edsyn->filematch[j][0] == '.');
+         if ((is_ext && ext && !strcmp(ext, edsyn->filematch[j])) ||
+            (!is_ext && strstr(E.filename, edsyn->filematch[j]))) {
+            E.syntax = edsyn;
+
+            for (loopvar = 0; loopvar < E.numrows; loopvar++) editor_update_hl(&E.rows_data[loopvar]);
+
+            return;
+         }
+         j++;
+      }
    }
 }
 
@@ -550,6 +625,7 @@ void open_editor(char *filename) {
 
    free(E.filename);
    E.filename = strdup(filename);
+   select_highlighting();
 
    while ((linelen = getline(&line, &linecap, file_handle)) != -1) {
       while (linelen > 0 && 
@@ -602,8 +678,9 @@ void save_editor() {
          set_status_extra("Did not save file");
          return;
       }
-   } 
-  
+   }
+
+   select_highlighting();
    content = editor_to_string(&len);
    fd = open(E.filename, O_RDWR | O_CREAT, 0644);
    
@@ -629,10 +706,19 @@ void callback_find(char* search_for, int key) {
    static int last = -1;
    static int direction = 1;
 
+   static int prev_instance_line;
+   static char *prev_instance = NULL;
+
    int i;
    int current;
    ed_row_data *row;
    char* match;
+
+   if (prev_instance) {
+      memcpy(E.rows_data[prev_instance_line].highlighted, prev_instance, E.rows_data[prev_instance_line].rensize);
+      free(prev_instance);
+      prev_instance = NULL;
+   }
 
    if (key == '\r' || key == '\x1b') {
       last = -1;
@@ -662,6 +748,12 @@ void callback_find(char* search_for, int key) {
          E.cy = current;
          E.cx = rx_to_cx(row, match - row->render);
          E.rowoff = E.numrows;
+
+         prev_instance_line = current;
+         prev_instance = malloc(row->rensize);
+         memcpy(prev_instance, row->highlighted, row->rensize);
+         memset(&row->highlighted[match - row->render], HL_MATCH, strlen(search_for));
+
          break;
       }
    }
@@ -833,6 +925,7 @@ void init() {
    E.mod = 0;
    E.rows_data = NULL;
    E.filename = NULL;
+   E.syntax = NULL;
    E.statis_extra_time = 0;
    E.status_extra[0] = '\0';
    if (term_size(&E.rows, &E.cols) == -1) die("term_size");

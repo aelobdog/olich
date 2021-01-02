@@ -8,9 +8,16 @@
 #define END_KEY  ('e' & 0x1f)
 #define SAVE_KEY ('s' & 0x1f)
 #define FIND_KEY ('f' & 0x1f)
+#define NEXTLINE ('n' & 0x1f)
+#define PREVLINE ('p' & 0x1f)
 
 enum ed_highlighting {
    HL_NORMAL = 0,
+   HL_MATCH,
+   HL_STRING,
+   HL_COMMENT,
+   HL_KEYWORD,
+   HL_DATATYPE,
    HL_NUMBER
 };
 
@@ -31,6 +38,11 @@ enum ed_highlighting {
 int hl_colors(int code) {
    switch (code) {
       case HL_NUMBER: return 31; 
+      case HL_MATCH: return 34;
+      case HL_STRING: return 35;
+      case HL_COMMENT: return 36;
+      case HL_KEYWORD: return 33;
+      case HL_DATATYPE: return 32;
       default : return 37;
    }
 }
