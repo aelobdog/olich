@@ -521,6 +521,8 @@ void editor_update_hl(ed_row_data *row) {
    int prev_sep;
    int in_string;
    char *scs;
+   char **kd;
+   char **dt;
    int scs_len;
    unsigned char prev_hl;
 
@@ -530,6 +532,8 @@ void editor_update_hl(ed_row_data *row) {
    if (E.syntax == NULL) return;
    scs = E.syntax->sl_cmt_start;
    scs_len = scs ? strlen(scs) : 0;
+   kd = E.syntax->keyword;
+   dt = E.syntax->datatypes;
 
    prev_sep = 1;
    i = 0;
@@ -573,6 +577,37 @@ void editor_update_hl(ed_row_data *row) {
             i++;
             prev_sep = 0;
             continue;
+         }
+      }
+
+      if (prev_sep) {
+         int j;
+         int klen;
+         for (j = 0; kd[j]; j++) {
+            klen = strlen(kd[j]);
+
+            if (!strncmp(&row->render[i], kd[j], klen) && is_separator(row->render[i + klen])) {
+               memset(&row->highlighted[i], HL_KEYWORD, klen);
+               i += klen;
+               break;
+            }
+            if (kd[j] != NULL) {
+               prev_sep = 0;
+               continue;
+            }
+         }
+         for (j = 0; dt[j]; j++) {
+            klen = strlen(dt[j]);
+
+            if (!strncmp(&row->render[i], dt[j], klen) && is_separator(row->render[i + klen])) {
+               memset(&row->highlighted[i], HL_DATATYPE, klen);
+               i += klen;
+               break;
+            }
+            if (dt[j] != NULL) {
+               prev_sep = 0;
+               continue;
+            }
          }
       }
 
