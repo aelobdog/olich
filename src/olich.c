@@ -1,4 +1,4 @@
-/* includes */
+/* incluaes */
 
 #include <ctype.h>
 #include <errno.h>
@@ -60,11 +60,13 @@ void buffer_free(struct buffer *buf) {
 /* data */
 
 typedef struct ed_row_data {
+   int idx;
    int size;
    int rensize;
-   unsigned char *highlighted;
    char *render;
    char *data;
+   unsigned char *highlighted;
+   int comment_open;
 } ed_row_data;
 
 struct editor_config {
@@ -142,11 +144,15 @@ void editor_update_row(ed_row_data *row) {
 }
 
 void editor_insert_row(int current, char *str, size_t len) {
+   int j;
+   
    if (current < 0 || current > E.numrows) return;
 
    E.rows_data = realloc(E.rows_data, sizeof(ed_row_data) * (E.numrows + 1));
    memmove(&E.rows_data[current+1], &E.rows_data[current], sizeof(ed_row_data) * (E.numrows - current));
+   for (j = current + 1; j <= E.numrows; j++) E.rows_data[j].idx++;
 
+   E.rows_data[current].idx = current;
    E.rows_data[current].size = len;
    E.rows_data[current].data = malloc(len + 1);
    memcpy(E.rows_data[current].data, str, len);
@@ -155,6 +161,7 @@ void editor_insert_row(int current, char *str, size_t len) {
    E.rows_data[current].rensize = 0;
    E.rows_data[current].render = NULL;
    E.rows_data[current].highlighted = NULL;
+   E.rows_data[current].comment_open = 0;
    editor_update_row(&E.rows_data[current]);
    
    E.numrows++;
@@ -168,6 +175,7 @@ void editor_free_row(ed_row_data *row) {
 }
 
 void editor_del_row(int row_num) {
+   int j;
    if (row_num < 0 || row_num >= E.numrows) return;
    editor_free_row(&E.rows_data[row_num]);
    memmove(
@@ -175,6 +183,7 @@ void editor_del_row(int row_num) {
       &E.rows_data[row_num + 1], 
       sizeof(ed_row_data) * (E.numrows - row_num - 1)
    );
+   for (j = row_num; j < E.numrows - 1; j++) E.rows_data[j].idx++;
    E.numrows--;
    E.mod++;
 }
@@ -293,6 +302,7 @@ void draw_rows(struct buffer *buf) {
          char* c;
          unsigned char* hl;
          int curcolor;
+         char sym;
          
          len = E.rows_data[filerow].rensize - E.coloff;
          if (len < 0) len = 0;
@@ -302,7 +312,18 @@ void draw_rows(struct buffer *buf) {
          hl = &E.rows_data[filerow].highlighted[E.coloff];
 
          for (j = 0; j < len; j++) {
-            if (hl[j] == HL_NORMAL) {
+            if (iscntrl(c[j])) {
+               sym = (c[j] <= 26) ? '@' + c[j] : '?';
+               buffer_append(buf, "\x1b[7m", 4);
+               buffer_append(buf, &sym, 1);
+               buffer_append(buf, "\x1b[m", 3);
+               if (curcolor != -1) {
+                  char nbuf[16];
+                  int clen;
+                  clen = snprintf(nbuf, sizeof(nbuf), "\x1b[%dm", curcolor);
+                  buffer_append(buf, nbuf, clen);
+               }
+            } else if (hl[j] == HL_NORMAL) {
                if (curcolor != -1) { 
                   buffer_append(buf, "\x1b[39m", 5);
                   curcolor = -1;
@@ -520,10 +541,16 @@ void editor_update_hl(ed_row_data *row) {
    char c;
    int prev_sep;
    int in_string;
+   int in_comment;
+   int changed;
    char *scs;
+   char *mcs;
+   char *mce;
    char **kd;
    char **dt;
    int scs_len;
+   int mcs_len;
+   int mce_len;
    unsigned char prev_hl;
 
    row->highlighted = realloc(row->highlighted, row->rensize);
@@ -531,24 +558,50 @@ void editor_update_hl(ed_row_data *row) {
 
    if (E.syntax == NULL) return;
    scs = E.syntax->sl_cmt_start;
+   mcs = E.syntax->ml_cmt_start;
+   mce = E.syntax->ml_cmt_end;
    scs_len = scs ? strlen(scs) : 0;
+   mcs_len = mcs ? strlen(mcs) : 0;
+   mce_len = mce ? strlen(mce) : 0;
    kd = E.syntax->keyword;
    dt = E.syntax->datatypes;
-
    prev_sep = 1;
    i = 0;
    in_string = 0;
+   in_comment = (row->idx > 0 && E.rows_data[row->idx - 1].comment_open);
+
    while (i < row->rensize) {
       c = row->render[i];
       prev_hl = (i > 0) ? row->highlighted[i-1] : HL_NORMAL;
 
-      if (scs_len && !in_string) {
+      if (scs_len && !in_string && !in_comment) {
          if (!strncmp(&row->render[i], scs, scs_len)) {
             memset(&row->highlighted[i], HL_COMMENT, row->rensize - i);
             break;
          }
+      } 
+
+      if (mcs_len && mce_len && !in_string) {
+         if (in_comment) {
+            row->highlighted[i] = HL_COMMENT;
+            if (!strncmp(&row->render[i], mce, mce_len)) {
+               memset(&row->highlighted[i], HL_COMMENT, mce_len);
+               i += mce_len;
+               in_comment = 0;
+               prev_sep = 1;
+               continue;
+            } else {
+               i++;
+               continue;
+            }
+         } else if (!strncmp(&row->render[i], mcs, mcs_len)) {
+            memset(&row->highlighted[i], HL_COMMENT, mcs_len);
+            i += mcs_len;
+            in_comment = 1;
+            continue;
+         }
       }
-      
+
       if (E.syntax->flags & HL_STRING) {
          if (in_string) {
             row->highlighted[i] = HL_STRING;
@@ -614,6 +667,9 @@ void editor_update_hl(ed_row_data *row) {
       prev_sep = is_separator(c);
       i++;
    }
+   changed = (row->comment_open != in_comment);
+   row->comment_open = in_comment;
+   if (changed && row->idx + 1 < E.numrows) editor_update_hl(&E.rows_data[row->idx + 1]);
 }
 
 void select_highlighting() {

@@ -12,7 +12,8 @@ struct editor_syntax {
    char **keyword;
    char **datatypes;
    char *sl_cmt_start;
-   /* char *ml_cmt_start; */
+   char *ml_cmt_start;
+   char *ml_cmt_end;
 
    int flags;
 } editor_syntax;
@@ -49,6 +50,7 @@ struct editor_syntax HL_DB[] = {
       C_HL_KW,
       C_HL_DT,
       "//",
+      "/*", "*/",
       HL_NUMBERS | HL_STRINGS
    }, 
    {
@@ -57,6 +59,7 @@ struct editor_syntax HL_DB[] = {
       GO_HL_KW,
       GO_HL_DT,
       "//",
+      "/*", "*/",
       HL_NUMBERS | HL_STRINGS
    },
 };
